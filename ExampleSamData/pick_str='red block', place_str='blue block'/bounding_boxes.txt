@@ -1,0 +1,2 @@
+{'xmin': 372, 'ymin': 230, 'xmax': 461, 'ymax': 308, 'strlabel': 'red block', 'xCenter': 416, 'yCenter': 269, 'ImgFrameWorldCoord': [-0.12495888769626617, -0.050091806799173355, 0.36362650990486145], 'sidelength': 0.05575849383246097}
+{'xmin': 568, 'ymin': 343, 'xmax': 655, 'ymax': 432, 'strlabel': 'blue block', 'xCenter': 611, 'yCenter': 387, 'ImgFrameWorldCoord': [-0.011695727705955505, 0.015342497266829014, 0.31939998269081116], 'sidelength': 0.05449590188537415}
