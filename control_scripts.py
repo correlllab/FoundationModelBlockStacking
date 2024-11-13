@@ -74,6 +74,7 @@ if __name__ == "__main__":
     myrs = real.RealSense()
     myrs.initConnection()
     myrobot = robot()
+    print(f"starting robot from control_scripts")
     myrobot.start()
 
     for i in range(10):
