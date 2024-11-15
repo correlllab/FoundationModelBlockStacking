@@ -112,10 +112,13 @@ Your role is to act as a block-stacking planner who creates detailed sequential 
 # Output Format
 
 The output should be a JSON object where each key is an integer indicating an order of execution, and the corresponding value is a JSON object detailing:
+- **current state**: (string) explains what the current state is
 - **done**: (boolean) indicates whether all conditions of the desired order are fulfilled.
 - **explanation**: (string) explains the reasoning behind the action taken.
 - **pick**: (string) specifies the block being picked in the current action.
 - **place**: (string) specifies where the block is being placed.
+- **end state**: (string) explains what the state should be after execution
+
 
 # Notes
 
@@ -133,7 +136,7 @@ The output should be a JSON object where each key is an integer indicating an or
 
     user_prompt += "The objects are currently stacked as follows:\n"
     for i in range(0,len(state_obj["object_relationships"])):
-        user_prompt += f"   {i}: {state_obj['object_relationships'][i][0]} is on top of {state_obj['object_relationships'][i][1]}.\n"
+        user_prompt += f"   {state_obj['object_relationships'][i][0]} is on top of {state_obj['object_relationships'][i][1]}.\n"
 
     user_prompt +="\n"
     if len(action_history) > 0:
