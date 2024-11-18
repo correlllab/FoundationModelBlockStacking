@@ -103,12 +103,6 @@ Your role is to act as a block-stacking planner who creates detailed sequential 
     2. Formulate practical steps, describing why each block needs to be moved, how it enables the next action, and how it advances toward the completion.
     3. Include each planned **pick** and **place** operation and the logical order they should follow, with reasoning detailed before each action.
 
-- **Post-Completion Review**:
-    1. **Verify**: Once all planned steps have been completed, verify the current stack order against the desired stack configuration to confirm accuracy.
-    2. **Assessment**: Confirm that no discrepancies remain and that every block is in the intended position.
-    3. **Done Update**: Mark the `done` field as `true` only in the step where all conditions of the desired order are fulfilled. If the desired order was already achieved, mark `done` as true in entry `0`.
-    4. **Final Confirmation**: Provide a summary message indicating that all steps are complete and the final configuration has been achieved without errors.
-
 # Output Format
 
 The output should be a JSON object where each key is an integer indicating an order of execution, and the corresponding value is a JSON object detailing:
@@ -126,8 +120,11 @@ The output should be a JSON object where each key is an integer indicating an or
 - **Avoid Unnecessary Actions**: Refrain from moving blocks to intermediate places (like the table) unless required to access another needed block.
 - **Sequence Consistency**: Always begin with entry `0` and incrementally proceed (`0`, `1`, `2`, `3`, etc.) without skipping entries.
 - **Post-Completion Check**: Conduct a final check to ensure that the configuration matches the desired state before concluding the task.
-- If no steps are required because the desired configuration is already met, entry `0` should reflect that the tower is complete, and the `done` status should be `true`.
-""")
+- **If no steps are required because the desired configuration is already met, entry `0` should reflect that the tower is complete, and the `done` status should be `true`.
+- **Pick and place strings should be concise nouns
+- **DO NOT PLACE THINGS ON THE TABLE THAT ARE ALREADY ON THE TABLE
+                     
+                     """)
     
     user_prompt = f"Give me the next step so the blocks are stacked with the {str_list_stack_order[0]} at the base of the tower"
     for i in range(1, len(str_list_stack_order)):
