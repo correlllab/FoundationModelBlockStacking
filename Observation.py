@@ -5,6 +5,7 @@ from config import n_depth_samples
 import pyrealsense2 as rs
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import open3d as o3d
 
 def get_observation_patch(obs, edge_color = "r"):
     rect = patches.Rectangle(
@@ -16,36 +17,14 @@ def get_observation_patch(obs, edge_color = "r"):
     return rect
 
 def get_depth_frame_intrinsics(rs_wrapper):
-    rgb_frame, depth_frame = get_frames(rs_wrapper)
+    _, depth_frame = get_frames(rs_wrapper)
     intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
-    return depth_frame, intrinsics
+    print(f"{dir(depth_frame.profile.as_video_stream_profile())=}")
+    print(f"{dir(depth_frame.profile)=}")
 
-def get_depths(point_list, rs_wrapper):
-    depth_measurements = [[] for p in point_list]
-    intrinsics = None
-    for i in range(n_depth_samples):
-        depth_frame, intrinsics = get_depth_frame_intrinsics(rs_wrapper)
-        for i, (x, y) in enumerate(point_list):
-            depth_val = depth_frame.get_distance(x, y)  # in meters
-            if depth_val > 0:
-                depth_measurements[i].append(depth_val)
-    
-    depth_measurements = [np.array(point_measurements) for point_measurements in depth_measurements]
-    final_depth_measurements = [0 for point in point_list]
-    for i, measurements in enumerate(depth_measurements):
-        std = np.std(measurements)
-        mean = np.mean(measurements)
-        in_std_mask = np.abs(measurements-mean) <= std
-        depth_measurements = measurements[in_std_mask]
-        #print(f"{depth_measurements=}")
-        depth_val = sum(measurements)/len(measurements)
-        #print(f"{depth_val=}")
-        assert depth_val > 0, f"not able to get depth val after {n_depth_samples} samples {depth_val=}"
-        final_depth_measurements[i] = depth_val
-    return final_depth_measurements
-
-def deproject_top_view_point(K, pixel_x, pixel_y, depth):
-    return rs.rs2_deproject_pixel_to_point(K, [pixel_x, pixel_y], depth)
+    depth_scale = rs_wrapper.device.first_depth_sensor().get_depth_scale()
+    print(f"{depth_scale=}")
+    return depth_scale, intrinsics
 
 class observation:
     def __init__(self, str_label):
@@ -56,27 +35,28 @@ class observation:
         self.ymax = None
         self.xCenter = None
         self.yCenter = None
+        
+        self.observation_pose = None
+        self.mask = None
+        
+        self.rgb_segment = None
+        self.depth_segment = None
+        self.pcd = None
+
+        self.ImgFrameWorldCoord = None
         self.sidelength = None
         self.pickPose = None
         self.placePose = None
-        self.Mask = None
-        self.observation_pose = None
-        self.mask = None
-        self.ImgFrameWorldCoord = None
-    def update_observation(self, rs_wrapper, label_vit, sam_predictor, observation_position, display = False):
-        rgb_img, depth_img = get_pictures(rs_wrapper)
-        self.observation_pose = observation_position
-        bbox = None
+
+    def calc_bbox(self, label_vit, rgb_img):
         with torch.no_grad():
-            queries = [self.str_label]
-            abbrevq = [self.str_label]
-            bbox = label_vit.label(rgb_img, queries[0], abbrevq[0], plot=False, topk=True)
+            bbox = label_vit.label(rgb_img, self.str_label, self.str_label, plot=False, topk=True)
             bbox = bbox[1][0].tolist()
         self.xmin = int(bbox[0])
         self.ymin = int(bbox[1])
         self.xmax = int(bbox[2])
         self.ymax = int(bbox[3])
-        
+
         invalid_border_px_x = 200
         invalid_border_px_y = 20
         self.xmin = np.clip(self.xmin, 0+invalid_border_px_x, rgb_img.shape[1]-invalid_border_px_x)
@@ -87,40 +67,55 @@ class observation:
         self.xCenter = int((self.xmin + self.xmax)/2)
         self.yCenter = int((self.ymin + self.ymax)/2)
 
+    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale):
         sam_predictor.set_image(rgb_img)
         sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
         sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
-        sam_mask = np.transpose(sam_mask, (1, 2, 0))
+        #sam_mask = np.transpose(sam_mask, (1, 2, 0))
+        sam_mask = np.all(sam_mask, axis=0)
+        expanded_sam_mask = np.expand_dims(sam_mask, axis=-1)
+        print(f"{sam_mask.shape=}")
+        print(f"{sam_scores.shape=}")
+        print(f"{sam_logits.shape=}")
+
         self.mask = sam_mask
-        depth_querry_list = [
-            (self.xCenter, self.yCenter),
-            (self.xmin, self.ymin),
-            (self.xmax, self.ymin)
-        ]
-        center_depth, ll_depth, lr_depth = get_depths(depth_querry_list, rs_wrapper)
-        _, K = get_depth_frame_intrinsics(rs_wrapper)
-        self.ImgFrameWorldCoord = deproject_top_view_point(K, self.xCenter, self.yCenter, center_depth)
-        LL_X, LL_Y, LL_Z = deproject_top_view_point(K, self.xmin, self.ymin, ll_depth)
-        LR_X, LR_Y, LR_Z = deproject_top_view_point(K, self.xmax, self.ymin, lr_depth)
-        sidelength =  (LL_X-LR_X)**2
-        sidelength += (LL_Y-LR_Y)**2
-        sidelength += (LL_Z-LR_Z)**2
-        sidelength = np.sqrt(sidelength)
-        self.sidelength = sidelength
-        self.sidelength = 0.04
+        self.rgb_segment = rgb_img*expanded_sam_mask
+        self.depth_segment = depth_img*sam_mask
+
+        temp_rgb_img = o3d.geometry.Image(self.rgb_segment)
+        temp_depth_img = o3d.geometry.Image(self.depth_segment)
+
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(temp_rgb_img, temp_depth_img, depth_scale=depth_scale, depth_trunc=10.0)
+        #print(f"{dir(K)=}")
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(K.width, K.height, K.fx, K.fy, K.ppx, K.ppy)
+        self.pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
+        print(f"{dir(self.pcd)=}")
+        print(f"n points = {len(self.pcd.points)}")
+        o3d.visualization.draw_geometries([self.pcd])
+
+
+
+    def update_observation(self, rs_wrapper, label_vit, sam_predictor, observation_position, display = False):
+        rgb_img, depth_img = get_pictures(rs_wrapper)
+        self.observation_pose = observation_position
+        depth_scale, K = get_depth_frame_intrinsics(rs_wrapper)
+
+        self.calc_bbox(label_vit, rgb_img)
+
+        self.calc_pc(sam_predictor, rgb_img, depth_img, K, depth_scale)
 
         if display:
             fig, axes = plt.subplots(nrows=2, ncols=2)
             axes[0, 0].imshow(rgb_img)
-            axes[1, 0].imshow(depth_img)
-
             axes[0, 0].add_patch(get_observation_patch(self, "r"))
-            axes[1, 0].add_patch(get_observation_patch(self, "r"))
-
             axes[0, 0].text(self.xmin, self.ymin - 10, f"{self.str_label}", color='r', fontsize=12, ha='left', va='bottom')
-            axes[1, 0].text(self.xmin, self.ymin - 10, f"{self.str_label}", color='r', fontsize=12, ha='left', va='bottom')
 
-            axes[0, 1].imshow(sam_mask)
+            axes[1, 0].imshow(self.mask)
+            axes[0, 1].imshow(self.rgb_segment)
+            axes[1, 1].imshow(self.depth_segment)
+
+            
+
 
             plt.tight_layout()
             plt.show()
@@ -129,6 +124,14 @@ if __name__ == "__main__":
     from magpie_control import realsense_wrapper as real
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     from magpie_perception.label_owlv2 import LabelOWLv2
+    from magpie_control.ur5 import UR5_Interface as robot
+    from control_scripts import goto_vec
+    from config import topview_vec
+
+    myrobot = robot()
+    print(f"starting robot from observation")
+    myrobot.start()
+
 
     myrs = real.RealSense()
     myrs.initConnection()
@@ -140,7 +143,9 @@ if __name__ == "__main__":
     sam_predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
     print(f"{sam_predictor.model.device=}")
 
-
+    goto_vec(myrobot, topview_vec)
     red_block_obs = observation("green block")
     red_block_obs.update_observation(myrs, label_vit, sam_predictor, 0, display=True)
+    myrobot.stop()
+    myrs.disconnect()
     
