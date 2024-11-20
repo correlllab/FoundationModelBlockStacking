@@ -6,7 +6,7 @@ import pyrealsense2 as rs
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import open3d as o3d
-
+import cv2
 def get_observation_patch(obs, edge_color = "r"):
     rect = patches.Rectangle(
                             (obs.xmin, obs.ymin),
@@ -19,12 +19,75 @@ def get_observation_patch(obs, edge_color = "r"):
 def get_depth_frame_intrinsics(rs_wrapper):
     _, depth_frame = get_frames(rs_wrapper)
     intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
-    print(f"{dir(depth_frame.profile.as_video_stream_profile())=}")
-    print(f"{dir(depth_frame.profile)=}")
+    #print(f"{dir(depth_frame.profile.as_video_stream_profile())=}")
+    #print(f"{dir(depth_frame.profile)=}")
 
-    depth_scale = rs_wrapper.device.first_depth_sensor().get_depth_scale()
-    print(f"{depth_scale=}")
+    depth_scale = 1/rs_wrapper.depthScale
+    #print(f"{depth_scale=}")
     return depth_scale, intrinsics
+def get_refined_depth(rs_wrapper, display = False):
+    depth_images = []
+    rgb_img = None
+    for i in range(n_depth_samples):
+        rgb_img, depth_image = get_pictures(rs_wrapper)
+        depth_images.append(depth_image)
+
+    depth_stack = np.stack(depth_images, axis=0)
+    #print(f"{depth_stack.shape=}")
+
+    #Compute mean ignoring 0 values
+    sum_depth_stack = np.sum(depth_stack, axis=0)
+    non_zero_counts = np.count_nonzero(depth_stack, axis=0)
+    #print(f"{sum_depth_stack.shape=}")
+    #print(f"{non_zero_counts.shape=}")
+    mean_depth_image = sum_depth_stack/non_zero_counts#np.divide(sum_depth_stack, non_zero_counts, where=non_zero_counts != 0)
+    mean_depth_image = np.nan_to_num(mean_depth_image, nan=0)
+    #print(mean_depth_image.shape)
+
+    #compute std deviation ignoring 0 values
+    squared_diff_stack = (depth_stack - mean_depth_image[None, :, :]) ** 2
+    squared_diff_stack[depth_stack == 0] = 0  # Ignore zero values
+    sum_squared_diff = np.sum(squared_diff_stack, axis=0)
+    std_dev_image = np.sqrt(sum_squared_diff / non_zero_counts)
+    std_dev_image = np.nan_to_num(std_dev_image, nan=0)
+    #print(f"{std_dev_image.shape=}")
+
+    #get mask of points within 1 standard deviation
+    lower_bounds = mean_depth_image - std_dev_image
+    upper_bounds = mean_depth_image + std_dev_image
+    mask = (depth_stack >= lower_bounds[None, :, :]) & (depth_stack <= upper_bounds[None, :, :])
+    #set points not within one standard deviation to 0
+    filtered_depth_stack = np.where(mask, depth_stack, 0)
+
+    #Compute mean ignoring 0 values and values not within 1 standard deviation
+    sum_depth_stack = np.sum(filtered_depth_stack, axis=0)
+    non_zero_counts = np.count_nonzero(filtered_depth_stack, axis=0)
+    filtered_depth_image = sum_depth_stack/non_zero_counts
+    filtered_depth_image = filtered_depth_image.astype(np.float32)
+
+    
+
+    if display:
+        
+        depth_scale, K = get_depth_frame_intrinsics(rs_wrapper)
+        temp_rgb_img = o3d.geometry.Image(rgb_img)
+        
+        temp_depth_img = o3d.geometry.Image(filtered_depth_image)
+
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(temp_rgb_img, temp_depth_img, depth_scale=depth_scale, depth_trunc=10.0, convert_rgb_to_intensity=False)
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(K.width, K.height, K.fx, K.fy, K.ppx, K.ppy)
+        pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
+
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        vis.add_geometry(pcd)
+        opt = vis.get_render_option()
+        opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
+
+        # Run the visualizer
+        vis.run()
+
+    return filtered_depth_image
 
 class observation:
     def __init__(self, str_label):
@@ -49,6 +112,7 @@ class observation:
         self.placePose = None
 
     def calc_bbox(self, label_vit, rgb_img):
+        bbox = None
         with torch.no_grad():
             bbox = label_vit.label(rgb_img, self.str_label, self.str_label, plot=False, topk=True)
             bbox = bbox[1][0].tolist()
@@ -67,7 +131,7 @@ class observation:
         self.xCenter = int((self.xmin + self.xmax)/2)
         self.yCenter = int((self.ymin + self.ymax)/2)
 
-    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale):
+    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale, display = False):
         sam_predictor.set_image(rgb_img)
         sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
         sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
@@ -85,18 +149,20 @@ class observation:
         temp_rgb_img = o3d.geometry.Image(self.rgb_segment)
         temp_depth_img = o3d.geometry.Image(self.depth_segment)
 
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(temp_rgb_img, temp_depth_img, depth_scale=depth_scale, depth_trunc=10.0)
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(temp_rgb_img, temp_depth_img, depth_scale=depth_scale, depth_trunc=10.0, convert_rgb_to_intensity=False)
         #print(f"{dir(K)=}")
         intrinsic = o3d.camera.PinholeCameraIntrinsic(K.width, K.height, K.fx, K.fy, K.ppx, K.ppy)
         self.pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
-        print(f"{dir(self.pcd)=}")
-        print(f"n points = {len(self.pcd.points)}")
-        o3d.visualization.draw_geometries([self.pcd])
+        if display:
+            print(f"{dir(self.pcd)=}")
+            print(f"n points = {len(self.pcd.points)}")
+            o3d.visualization.draw_geometries([self.pcd])
 
 
 
     def update_observation(self, rs_wrapper, label_vit, sam_predictor, observation_position, display = False):
         rgb_img, depth_img = get_pictures(rs_wrapper)
+        depth_img = get_refined_depth(rs_wrapper)
         self.observation_pose = observation_position
         depth_scale, K = get_depth_frame_intrinsics(rs_wrapper)
 
