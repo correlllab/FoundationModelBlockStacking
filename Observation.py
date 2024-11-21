@@ -227,6 +227,9 @@ class observation:
             [0, 0, 1, PC_Z_offset],
             [0, 0, 0, 1]
         ])
+        print(f"{pose2world_transform.shape=}")
+        print(f"{offset_matrix.shape=}")
+
         transform_matrix = pose2world_transform @ offset_matrix
         self.pcd.transform(transform_matrix)
         
@@ -343,7 +346,6 @@ if __name__ == "__main__":
     goto_vec(myrobot, topview_vec)
     print(f"{topview_vec=}")
 
-    cam2base_transform = myrobot.get_tcp_pose()
     observation_list = ["red block", "blue block", "green block", "yellow block", "white paper"]
     om = observation_manager(observation_list, myrs, label_vit, sam_predictor, myrobot)
     om.update_observations(display=False)
