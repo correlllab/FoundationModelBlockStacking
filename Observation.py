@@ -156,10 +156,36 @@ class observation:
         self.pickPose[1] = self.centroid[1]
         self.pickPose[2] = self.centroid[2]
 
-        pca = PCA(n_components=2)
-        pca.fit(np.asarray(self.pcd.points))
-        print(pca.components_)
-        x, y, z = pca.components_[0]
+        zeroMeanPoints = np.asarray(self.pcd.points) - self.centroid
+
+        pca = PCA(n_components=3)
+        pca.fit(np.asarray(zeroMeanPoints))
+        #print(pca.components_)
+        primary_axis = pca.components_[0]
+        secondary_axis = pca.components_[1]
+        tertiary_axis = np.cross(primary_axis, secondary_axis)  # Ensure orthogonality
+        R = np.stack([primary_axis, secondary_axis, tertiary_axis], axis=1)
+        gripper_approach_axis = tertiary_axis  # Smallest variance
+
+        if gripper_approach_axis[2] > 0:  # Flip to ensure positive Z-alignment
+            gripper_approach_axis = -gripper_approach_axis
+        
+        # Ensure a right-handed coordinate system
+        orthogonal_axis = np.cross(primary_axis, gripper_approach_axis)
+        orthogonal_axis /= np.linalg.norm(orthogonal_axis)  # Normalize
+
+        # Final rotation matrix (aligned to gripper frame)
+        R = np.column_stack([primary_axis, orthogonal_axis, gripper_approach_axis])
+        
+        # Convert rotation matrix to roll, pitch, yaw
+        yaw = np.arctan2(R[1, 0], R[0, 0])
+        pitch = np.arctan2(-R[2, 0], np.sqrt(R[2, 1]**2 + R[2, 2]**2))
+        roll = np.arctan2(R[2, 1], R[2, 2])
+
+        self.pickPose[3] = roll
+        self.pickPose[4] = pitch
+        self.pickPose[5] = yaw
+
 
         
         
@@ -245,13 +271,12 @@ class observation_manager:
             sphere.paint_uniform_color([0, 0, 0])
             vis.add_geometry(sphere)
 
-            pickPose_cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=0.005, height=0.075)
+            pickPose_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03, origin=[0, 0, 0])
             rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
-            pickPose_cylinder.rotate(rot_mat, center=(0, 0, 0))
-            pickPose_cylinder.paint_uniform_color([0.2, 0.2, 0.2])
+            pickPose_axis.rotate(rot_mat, center=(0, 0, 0))
             #print(observation.pickPose[:3])
-            pickPose_cylinder.translate(observation.pickPose[:3])
-            vis.add_geometry(pickPose_cylinder)
+            pickPose_axis.translate(observation.pickPose[:3])
+            vis.add_geometry(pickPose_axis)
 
         axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])    
         vis.add_geometry(axis)
@@ -290,19 +315,19 @@ if __name__ == "__main__":
     observation_list = ["red block", "blue block", "green block", "yellow block", "white paper"]
     om = observation_manager(observation_list, myrs, label_vit, sam_predictor, myrobot)
     om.update_observations(display=False)
-    om.display()
-    for target in observation_list:
+
+    for target in observation_list[:-1]:
         target_pose = om.observations[target].pickPose.copy()
         target_pose[2] += tcp_Z_offset
-        target_pose[3] = topview_vec[3]
-        target_pose[4] = topview_vec[4]
-        target_pose[5] = topview_vec[5]
+        #target_pose[3] = topview_vec[3]
+        #target_pose[4] = topview_vec[4]
+        #target_pose[5] = topview_vec[5]
         print(f"{om.observations[target].str_label}={target_pose}")
         
         goto_vec(myrobot, target_pose)
         input()
         goto_vec(myrobot, topview_vec)
-    
+    om.display()
     myrobot.stop()
     myrs.disconnect()
     
