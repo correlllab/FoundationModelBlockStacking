@@ -1,7 +1,7 @@
 import torch
 import numpy as np
-from control_scripts import get_pictures, get_frames
-from config import n_depth_samples, PC_X_offset, PC_Y_offset, PC_Z_offset, realSenseFPS
+from control_scripts import get_pictures, get_frames, get_depth_frame_intrinsics
+from config import n_depth_samples, realSenseFPS, tcp_Z_offset
 import pyrealsense2 as rs
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -11,40 +11,6 @@ import warnings
 from sklearn.decomposition import PCA
 from magpie_control.ur5 import pose_vector_to_homog_coord, homog_coord_to_pose_vector
 
-def align_axis_to_vector(vector, axis):
-    """
-    Computes a rotation matrix to align the given axis with a target vector.
-    
-    Parameters:
-        vector (np.ndarray): Target vector to align the axis with (3D).
-        axis (np.ndarray): Axis to align with the vector (default is z-axis [0, 0, 1]).
-    
-    Returns:
-        np.ndarray: 3x3 rotation matrix.
-    """
-    # Normalize the input vector and axis
-    vector = vector / np.linalg.norm(vector)
-    axis = axis / np.linalg.norm(axis)
-    
-    # Compute the cross product and the sine of the angle
-    cross = np.cross(axis, vector)
-    sin_theta = np.linalg.norm(cross)
-    
-    # Compute the dot product and the cosine of the angle
-    cos_theta = np.dot(axis, vector)
-    
-    # Create the skew-symmetric cross-product matrix
-    cross_matrix = np.array([
-        [0, -cross[2], cross[1]],
-        [cross[2], 0, -cross[0]],
-        [-cross[1], cross[0], 0]
-    ])
-    
-    # Compute the rotation matrix using Rodrigues' rotation formula
-    I = np.eye(3)
-    R = I + cross_matrix + cross_matrix @ cross_matrix * ((1 - cos_theta) / (sin_theta**2))
-    
-    return R
 def rotation_matrix_to_rpy(R):
     roll = np.arctan2(R[2, 1], R[2, 2])  # atan2(R32, R33)
     pitch = -np.arcsin(R[2, 0])          # -asin(R31)
@@ -73,38 +39,6 @@ def rpy_to_rotation_matrix(roll, pitch, yaw):
     # Combine rotations: R = R_z * R_y * R_x
     R = R_z @ R_y @ R_x
     return R
-def display_observations(observations, observer_pose = None):
-    print(f"{len(observations)=}") 
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    if observer_pose is not None:
-        observer_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.01)
-        observer_sphere.translate(observer_pose[:3])
-        observer_sphere.paint_uniform_color([1, 0, 0])
-        vis.add_geometry(observer_sphere)
-
-    for observation in observations:
-        vis.add_geometry(observation.pcd)
-
-        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
-        sphere.translate(observation.centroid)
-        sphere.paint_uniform_color([0, 0, 0])
-        vis.add_geometry(sphere)
-
-        pickPose_cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=0.005, height=0.1)
-        rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
-        pickPose_cylinder.rotate(rot_mat, center=(0, 0, 0))
-        pickPose_cylinder.paint_uniform_color([0.2, 0.2, 0.2])
-        pickPose_cylinder.translate(observation.pickPose[:3])
-
-
-        vis.add_geometry(pickPose_cylinder)        
-    vis.add_geometry(axis)
-    opt = vis.get_render_option()
-    opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
-    # Run the visualizer
-    vis.run()
 def get_observation_patch(obs, edge_color = "r"):
     rect = patches.Rectangle(
                             (obs.xmin, obs.ymin),
@@ -113,16 +47,6 @@ def get_observation_patch(obs, edge_color = "r"):
                                 linewidth=2, edgecolor=edge_color, facecolor='none'
                             )
     return rect
-
-def get_depth_frame_intrinsics(rs_wrapper):
-    _, depth_frame = get_frames(rs_wrapper)
-    intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
-    #print(f"{dir(depth_frame.profile.as_video_stream_profile())=}")
-    #print(f"{dir(depth_frame.profile)=}")
-
-    depth_scale = 1/rs_wrapper.depthScale
-    #print(f"{depth_scale=}")
-    return depth_scale, intrinsics
 def get_refined_depth(rs_wrapper):
     warnings.simplefilter("ignore", category=RuntimeWarning)
     depth_images = []
@@ -199,19 +123,18 @@ class observation:
         #self.ymin = np.clip(self.ymin, 0+invalid_border_px_y, rgb_img.shape[0]-invalid_border_px_y)
         #self.ymax = np.clip(self.ymax, 0+invalid_border_px_y, rgb_img.shape[0]-invalid_border_px_y)
 
-
-    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale, pose2world_transform, display = False):
+    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale, observation_pose):
         sam_predictor.set_image(rgb_img)
         sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
         sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
         sam_mask = np.all(sam_mask, axis=0)
-        expanded_sam_mask = np.expand_dims(sam_mask, axis=-1)
+        #expanded_sam_mask = np.expand_dims(sam_mask, axis=-1)
         
 
         self.mask = sam_mask
-        self.rgb_segment = rgb_img
+        self.rgb_segment = rgb_img.copy()
         self.rgb_segment[~sam_mask] = 0
-        self.depth_segment = depth_img
+        self.depth_segment = depth_img.copy()
         self.depth_segment[~sam_mask] = 0
 
         temp_rgb_img = o3d.geometry.Image(self.rgb_segment)
@@ -221,55 +144,40 @@ class observation:
         #print(f"{dir(K)=}")
         intrinsic = o3d.camera.PinholeCameraIntrinsic(K.width, K.height, K.fx, K.fy, K.ppx, K.ppy)
         self.pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
-        offset_matrix = np.array([
-            [1, 0, 0, PC_X_offset],
-            [0, 1, 0, PC_Y_offset],
-            [0, 0, 1, PC_Z_offset],
-            [0, 0, 0, 1]
-        ])
-        print(f"{pose2world_transform.shape=}")
-        print(f"{offset_matrix.shape=}")
 
-        transform_matrix = pose2world_transform @ offset_matrix
+        transform_matrix = pose_vector_to_homog_coord(observation_pose)
         self.pcd.transform(transform_matrix)
         
         self.centroid = np.asarray(self.pcd.points).mean(axis=0)
-        #print(f"self.centroid={self.centroid}")
-        if display:
-            display_observations([self])
 
     def calc_pick_pose(self):
-        self.pickPose = [0,0,0,0,0,0]
+        self.pickPose = topview_vec.copy()
         self.pickPose[0] = self.centroid[0]
         self.pickPose[1] = self.centroid[1]
         self.pickPose[2] = self.centroid[2]
 
-        pca = PCA(n_components=3)
-        points = np.asarray(self.pcd.points)
-        #print(f"{points.shape=}")
-        pca.fit(points)
-        principal_component = pca.components_[2]
-        roll, pitch, yaw = rotation_matrix_to_rpy(align_axis_to_vector(principal_component, axis=np.array([0, 1, 0])))
-        pitch *= -1
-        self.pickPose[3] = roll
-        self.pickPose[4] = pitch
-        self.pickPose[5] = yaw
+        pca = PCA(n_components=2)
+        pca.fit(np.asarray(self.pcd.points))
+        print(pca.components_)
+        x, y, z = pca.components_[0]
+
+        
+        
 
     def calc_place_pose(self):
-        self.placePose = self.pickPose.copy()
-        self.placePose[2] = self.placePose[2] + 0.05
+        pass
 
-    def update_observation(self, rs_wrapper, label_vit, sam_predictor, pose2world_transform, display = False):
+    def update_observation(self, rs_wrapper, label_vit, sam_predictor, observation_pose, display = False):
         rgb_img, depth_img = get_pictures(rs_wrapper)
         depth_img = get_refined_depth(rs_wrapper)
-        rgb_img = cv2.rotate(rgb_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        depth_img = cv2.rotate(depth_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        #rgb_img = cv2.rotate(rgb_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        #depth_img = cv2.rotate(depth_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
         depth_scale, K = get_depth_frame_intrinsics(rs_wrapper)
 
         self.calc_bbox(label_vit, rgb_img)
 
-        self.calc_pc(sam_predictor, rgb_img, depth_img, K, depth_scale, pose2world_transform)
+        self.calc_pc(sam_predictor, rgb_img, depth_img, K, depth_scale, observation_pose)
 
         self.calc_pick_pose()
         self.calc_place_pose()
@@ -310,15 +218,48 @@ class observation_manager:
             self.observations[thing] = observation(thing)
 
     def update_observations(self, display = False):
-        transform = self.UR_interface.get_tcp_pose()
-        self.observation_pose = homog_coord_to_pose_vector(transform)
+        self.observation_pose = homog_coord_to_pose_vector(self.UR_interface.get_cam_pose())#self.UR_interface.recv.getActualTCPPose()
+        print(f"{self.observation_pose=}")
         #print(f"{self.observation_pose=}")
         observation_list = list(self.observations.values())
         for obs in observation_list:
             #print(f"Updating observation for {obs.str_label}")
-            obs.update_observation(self.rs_wrapper, self.label_vit, self.sam_predictor, transform)
+            obs.update_observation(self.rs_wrapper, self.label_vit, self.sam_predictor, self.observation_pose)
         if display:
-            display_observations(observation_list, observer_pose = self.observation_pose)
+            self.display()
+
+    def display(self):
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+
+        T = pose_vector_to_homog_coord(self.observation_pose)
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
+        axis.transform(T)
+        vis.add_geometry(axis)
+
+        for label, observation in self.observations.items():
+            vis.add_geometry(observation.pcd)
+
+            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.005)
+            sphere.translate(observation.centroid)
+            sphere.paint_uniform_color([0, 0, 0])
+            vis.add_geometry(sphere)
+
+            pickPose_cylinder = o3d.geometry.TriangleMesh.create_cylinder(radius=0.005, height=0.075)
+            rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
+            pickPose_cylinder.rotate(rot_mat, center=(0, 0, 0))
+            pickPose_cylinder.paint_uniform_color([0.2, 0.2, 0.2])
+            #print(observation.pickPose[:3])
+            pickPose_cylinder.translate(observation.pickPose[:3])
+            vis.add_geometry(pickPose_cylinder)
+
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])    
+        vis.add_geometry(axis)
+        opt = vis.get_render_option()
+        opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
+        # Run the visualizer
+        vis.run()
+        
 
 if __name__ == "__main__":
     from magpie_control import realsense_wrapper as real
@@ -349,16 +290,19 @@ if __name__ == "__main__":
     observation_list = ["red block", "blue block", "green block", "yellow block", "white paper"]
     om = observation_manager(observation_list, myrs, label_vit, sam_predictor, myrobot)
     om.update_observations(display=False)
+    om.display()
     for target in observation_list:
-        target_pose = om.observations[target].pickPose
+        target_pose = om.observations[target].pickPose.copy()
+        target_pose[2] += tcp_Z_offset
         target_pose[3] = topview_vec[3]
         target_pose[4] = topview_vec[4]
         target_pose[5] = topview_vec[5]
-        print(f"{target_pose=}")
-
+        print(f"{om.observations[target].str_label}={target_pose}")
+        
         goto_vec(myrobot, target_pose)
         input()
         goto_vec(myrobot, topview_vec)
+    
     myrobot.stop()
     myrs.disconnect()
     

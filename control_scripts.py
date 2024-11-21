@@ -64,6 +64,16 @@ def goto_vec(UR_interface, goal_vec, warning_tolorance=0.01, failure_tolerance=0
         success = False
     return success
 
+def get_depth_frame_intrinsics(rs_wrapper):
+    _, depth_frame = get_frames(rs_wrapper)
+    intrinsics = depth_frame.profile.as_video_stream_profile().intrinsics
+    #print(f"{dir(depth_frame.profile.as_video_stream_profile())=}")
+    #print(f"{dir(depth_frame.profile)=}")
+
+    depth_scale = 1/rs_wrapper.depthScale
+    #print(f"{depth_scale=}")
+    return depth_scale, intrinsics
+
 if __name__ == "__main__":
     from magpie_control import realsense_wrapper as real
     from magpie_control.ur5 import UR5_Interface as robot
