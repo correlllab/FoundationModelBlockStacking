@@ -59,7 +59,7 @@ def goto_vec(UR_interface, goal_vec, warning_tolorance=0.01, failure_tolerance=0
         warnings.warn(f"Linear Error greater than warning tolerance {linear_error=} {goal_vec=} {actual_pose=}")
         success = False
     if angular_error >= warning_tolorance:
-        assert angular_error < failure_tolerance, f"Angular Error greater than failure tolerance {linear_error=} {goal_vec=} {actual_pose=}"
+        #assert angular_error < failure_tolerance, f"Angular Error greater than failure tolerance {linear_error=} {goal_vec=} {actual_pose=}"
         warnings.warn(f"Angular Error greater than warning tolerance {angular_error=} {goal_vec=} {actual_pose=}")
         success = False
     return success

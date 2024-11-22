@@ -77,6 +77,7 @@ Make sure the output JSON adheres strictly to the specified structure and valida
 # Notes
 
 - The table itself should also be visible in the object list.
+- The white paper should also be in the object list
 - Ensure no object is left unplaced; every object must be included in the relationships field either on another object or on the table.
 - Follow the reasoning steps explicitly before outputting to ensure correctness and completeness.
 """)
@@ -123,6 +124,7 @@ The output should be a JSON object where each key is an integer indicating an or
 - **If no steps are required because the desired configuration is already met, entry `0` should reflect that the tower is complete, and the `done` status should be `true`.
 - **Pick and place strings should be concise nouns
 - **DO NOT PLACE THINGS ON THE TABLE THAT ARE ALREADY ON THE TABLE
+- **To place things on the table use the word "white paper" as the object name
                      
                      """)
     

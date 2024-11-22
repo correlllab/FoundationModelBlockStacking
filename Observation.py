@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from control_scripts import get_pictures, get_frames, get_depth_frame_intrinsics
-from config import n_depth_samples, realSenseFPS, tcp_Z_offset
+from config import n_depth_samples, realSenseFPS, tcp_Z_offset, topview_vec
 import pyrealsense2 as rs
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -92,8 +92,11 @@ def get_refined_depth(rs_wrapper):
     return filtered_depth_image
 
 class observation:
-    def __init__(self, str_label):
+    def __init__(self, str_label, label_vit, sam_predictor):
         self.str_label = str_label
+        self.label_vit = label_vit
+        self.sam_predictor = sam_predictor
+
         self.xmin = None
         self.xmax = None
         self.ymin = None
@@ -104,14 +107,15 @@ class observation:
         self.rgb_segment = None
         self.depth_segment = None
         self.pcd = None
+        self.pcd_bbox = None
 
         self.pickPose = None
         self.placePose = None
-
-    def calc_bbox(self, label_vit, rgb_img):
+        
+    def calc_bbox(self, rgb_img):
         bbox = None
         with torch.no_grad():
-            bbox = label_vit.label(rgb_img, self.str_label, self.str_label, plot=False, topk=True)
+            bbox = self.label_vit.label(rgb_img, self.str_label, self.str_label, plot=False, topk=True)
             bbox = bbox[1][0].tolist()
         self.xmin = int(bbox[0])
         self.ymin = int(bbox[1])
@@ -123,10 +127,10 @@ class observation:
         #self.ymin = np.clip(self.ymin, 0+invalid_border_px_y, rgb_img.shape[0]-invalid_border_px_y)
         #self.ymax = np.clip(self.ymax, 0+invalid_border_px_y, rgb_img.shape[0]-invalid_border_px_y)
 
-    def calc_pc(self, sam_predictor, rgb_img, depth_img, K, depth_scale, observation_pose):
-        sam_predictor.set_image(rgb_img)
+    def calc_pc(self, rgb_img, depth_img, K, depth_scale, observation_pose):
+        self.sam_predictor.set_image(rgb_img)
         sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
-        sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
+        sam_mask, sam_scores, sam_logits = self.sam_predictor.predict(box=sam_box)
         sam_mask = np.all(sam_mask, axis=0)
         #expanded_sam_mask = np.expand_dims(sam_mask, axis=-1)
         
@@ -143,67 +147,47 @@ class observation:
         rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(temp_rgb_img, temp_depth_img, depth_scale=depth_scale, depth_trunc=10.0, convert_rgb_to_intensity=False)
         #print(f"{dir(K)=}")
         intrinsic = o3d.camera.PinholeCameraIntrinsic(K.width, K.height, K.fx, K.fy, K.ppx, K.ppy)
-        self.pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
-
+        pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
+        #pcd = pcd.uniform_down_sample(every_k_points=5)
+        #pcd = pcd.voxel_down_sample(voxel_size=0.001)  # Down-sample with finer detail
         transform_matrix = pose_vector_to_homog_coord(observation_pose)
-        self.pcd.transform(transform_matrix)
+        pcd.transform(transform_matrix)
         
-        self.centroid = np.asarray(self.pcd.points).mean(axis=0)
+        
+        #if self.pcd is None:
+        self.pcd = pcd
+        #else:
+        #    self.pcd = self.pcd + pcd
+        #self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
+        self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=1000, std_ratio=1.0)
+        self.pcd_bbox = self.pcd.get_axis_aligned_bounding_box()
+        self.pcd_bbox.color = (1,0,0)
+        
 
+        
     def calc_pick_pose(self):
+        self.centroid = self.pcd_bbox.get_center()
+        
         self.pickPose = topview_vec.copy()
         self.pickPose[0] = self.centroid[0]
         self.pickPose[1] = self.centroid[1]
-        self.pickPose[2] = self.centroid[2]
-
-        zeroMeanPoints = np.asarray(self.pcd.points) - self.centroid
-
-        pca = PCA(n_components=3)
-        pca.fit(np.asarray(zeroMeanPoints))
-        #print(pca.components_)
-        primary_axis = pca.components_[0]
-        secondary_axis = pca.components_[1]
-        tertiary_axis = np.cross(primary_axis, secondary_axis)  # Ensure orthogonality
-        R = np.stack([primary_axis, secondary_axis, tertiary_axis], axis=1)
-        gripper_approach_axis = tertiary_axis  # Smallest variance
-
-        if gripper_approach_axis[2] > 0:  # Flip to ensure positive Z-alignment
-            gripper_approach_axis = -gripper_approach_axis
-        
-        # Ensure a right-handed coordinate system
-        orthogonal_axis = np.cross(primary_axis, gripper_approach_axis)
-        orthogonal_axis /= np.linalg.norm(orthogonal_axis)  # Normalize
-
-        # Final rotation matrix (aligned to gripper frame)
-        R = np.column_stack([primary_axis, orthogonal_axis, gripper_approach_axis])
-        
-        # Convert rotation matrix to roll, pitch, yaw
-        yaw = np.arctan2(R[1, 0], R[0, 0])
-        pitch = np.arctan2(-R[2, 0], np.sqrt(R[2, 1]**2 + R[2, 2]**2))
-        roll = np.arctan2(R[2, 1], R[2, 2])
-
-        self.pickPose[3] = roll
-        self.pickPose[4] = pitch
-        self.pickPose[5] = yaw
-
+        self.pickPose[2] = self.centroid[2] + tcp_Z_offset
+        #self.pcd_bbox = pcd.get_oriented_bounding_box()
+        #print(f"{dir(self.pcd_bbox)=}")
 
         
+        #pca = PCA(n_components=3)
+        #pca.fit(np.asarray(pcd.points) - self.centroid)
         
 
     def calc_place_pose(self):
-        pass
+        self.placePose = self.pickPose.copy()
+        self.placePose[2] += 0.04
 
-    def update_observation(self, rs_wrapper, label_vit, sam_predictor, observation_pose, display = False):
-        rgb_img, depth_img = get_pictures(rs_wrapper)
-        depth_img = get_refined_depth(rs_wrapper)
-        #rgb_img = cv2.rotate(rgb_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        #depth_img = cv2.rotate(depth_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    def update_observation(self, rgb_img, depth_img, K, depth_scale,  observation_pose, display = False):
+        self.calc_bbox(rgb_img)
 
-        depth_scale, K = get_depth_frame_intrinsics(rs_wrapper)
-
-        self.calc_bbox(label_vit, rgb_img)
-
-        self.calc_pc(sam_predictor, rgb_img, depth_img, K, depth_scale, observation_pose)
+        self.calc_pc(rgb_img, depth_img, K, depth_scale, observation_pose)
 
         self.calc_pick_pose()
         self.calc_place_pose()
@@ -241,16 +225,20 @@ class observation_manager:
 
         self.observations = {}
         for thing in things_to_observe:
-            self.observations[thing] = observation(thing)
+            self.observations[thing] = observation(thing, self.label_vit, self.sam_predictor)
 
     def update_observations(self, display = False):
+        rgb_img, depth_img = get_pictures(self.rs_wrapper)
+        depth_img = get_refined_depth(self.rs_wrapper)
+        depth_scale, K = get_depth_frame_intrinsics(self.rs_wrapper)
+        
         self.observation_pose = homog_coord_to_pose_vector(self.UR_interface.get_cam_pose())#self.UR_interface.recv.getActualTCPPose()
         print(f"{self.observation_pose=}")
         #print(f"{self.observation_pose=}")
         observation_list = list(self.observations.values())
         for obs in observation_list:
             #print(f"Updating observation for {obs.str_label}")
-            obs.update_observation(self.rs_wrapper, self.label_vit, self.sam_predictor, self.observation_pose)
+            obs.update_observation(rgb_img, depth_img, K, depth_scale, self.observation_pose)
         if display:
             self.display()
 
@@ -271,12 +259,14 @@ class observation_manager:
             sphere.paint_uniform_color([0, 0, 0])
             vis.add_geometry(sphere)
 
-            pickPose_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03, origin=[0, 0, 0])
-            rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
-            pickPose_axis.rotate(rot_mat, center=(0, 0, 0))
+            #pickPose_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03, origin=[0, 0, 0])
+            #rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
+            #pickPose_axis.rotate(rot_mat, center=(0, 0, 0))
             #print(observation.pickPose[:3])
-            pickPose_axis.translate(observation.pickPose[:3])
-            vis.add_geometry(pickPose_axis)
+            #pickPose_axis.translate(observation.pickPose[:3])
+            #vis.add_geometry(pickPose_axis)
+
+            vis.add_geometry(observation.pcd_bbox)
 
         axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])    
         vis.add_geometry(axis)
@@ -292,7 +282,7 @@ if __name__ == "__main__":
     from magpie_perception.label_owlv2 import LabelOWLv2
     from magpie_control.ur5 import UR5_Interface as robot
     from control_scripts import goto_vec
-    from config import topview_vec
+    from config import frontview_vec, leftview_vec, rightview_vec, behindview_vec
 
     myrobot = robot()
     print(f"starting robot from observation")
@@ -309,16 +299,30 @@ if __name__ == "__main__":
     sam_predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
     print(f"{sam_predictor.model.device=}")
 
-    goto_vec(myrobot, topview_vec)
     print(f"{topview_vec=}")
 
     observation_list = ["red block", "blue block", "green block", "yellow block", "white paper"]
     om = observation_manager(observation_list, myrs, label_vit, sam_predictor, myrobot)
+
+    
+    goto_vec(myrobot, frontview_vec)
     om.update_observations(display=False)
+    """
+    goto_vec(myrobot, leftview_vec)
+    om.update_observations(display=False)
+
+    goto_vec(myrobot, behindview_vec)
+    om.update_observations(display=False)
+    
+    goto_vec(myrobot, rightview_vec)
+    om.update_observations(display=False)
+    """
+    goto_vec(myrobot, topview_vec)
+    om.update_observations(display=True)
 
     for target in observation_list[:-1]:
         target_pose = om.observations[target].pickPose.copy()
-        target_pose[2] += tcp_Z_offset
+        target_pose[2] 
         #target_pose[3] = topview_vec[3]
         #target_pose[4] = topview_vec[4]
         #target_pose[5] = topview_vec[5]
