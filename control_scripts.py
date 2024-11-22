@@ -47,8 +47,13 @@ def pose_vector_distance(goal_vec, actual_pose):
 
 def goto_vec(UR_interface, goal_vec, warning_tolorance=0.01, failure_tolerance=0.1):
     #print(f"{goal_vec=}")
-    goal_matrix = UR_interface.poseVectorToMatrix(goal_vec)
+    goal_matrix = UR_interface.poseVectorToMatrix(goal_vec).A
+    #print(f"{goal_matrix=}")
+    #print(type(goal_matrix))
+    #print(f"{goal_matrix[:3, 3]=}")
     UR_interface.moveL(goal_matrix, linSpeed=arm_speed, asynch=False)
+    #UR_interface.move_tcp_cartesian(goal_matrix, z_offset=0)
+
     actual_pose = UR_interface.recv.getActualTCPPose()
     #print(f"{actual_pose=}")
     linear_error, angular_error = pose_vector_distance(goal_vec, actual_pose)

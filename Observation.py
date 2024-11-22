@@ -10,6 +10,10 @@ import cv2
 import warnings
 from sklearn.decomposition import PCA
 from magpie_control.ur5 import pose_vector_to_homog_coord, homog_coord_to_pose_vector
+#import magpie_control.ur5
+#print(f"{magpie_control.ur5.__file__=}")
+from magpie_perception.pcd import get_pca_frame
+
 
 def rotation_matrix_to_rpy(R):
     roll = np.arctan2(R[2, 1], R[2, 2])  # atan2(R32, R33)
@@ -158,22 +162,52 @@ class observation:
         self.pcd = pcd
         #else:
         #    self.pcd = self.pcd + pcd
-        #self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=1.0)
         self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=1000, std_ratio=1.0)
-        self.pcd_bbox = self.pcd.get_axis_aligned_bounding_box()
+        #self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=0.1)
+        #self.pcd_bbox = self.pcd.get_axis_aligned_bounding_box()
+        self.pcd_bbox = pcd.get_minimal_oriented_bounding_box()
         self.pcd_bbox.color = (1,0,0)
         
-
-        
+            
     def calc_pick_pose(self):
-        self.centroid = self.pcd_bbox.get_center()
         
-        self.pickPose = topview_vec.copy()
-        self.pickPose[0] = self.centroid[0]
-        self.pickPose[1] = self.centroid[1]
-        self.pickPose[2] = self.centroid[2] + tcp_Z_offset
-        #self.pcd_bbox = pcd.get_oriented_bounding_box()
-        #print(f"{dir(self.pcd_bbox)=}")
+        
+        #self.pickPose = topview_vec.copy()
+        #self.pickPose[0] = self.centroid[0]
+        #self.pickPose[1] = self.centroid[1]
+        #self.pickPose[2] = self.centroid[2] + tcp_Z_offset
+        self.centroid = self.pcd_bbox.get_center()
+        mc = self.pcd.compute_mean_and_covariance()
+        print(f"{dir(mc)=}")
+        grasp_pose = [mc[0][1], -mc[0][0], mc[0][2]]
+        pcaFrame, tmat = get_pca_frame(mc[0], mc[1], scale=1500)
+        print(type(pcaFrame))
+        #tmat[:3, 3] = grasp_pose
+        tmat[:3, 3] = self.centroid
+        print(f"{tmat=}")
+        tvec = homog_coord_to_pose_vector(tmat)
+        print(f"{tvec=}")
+        self.pickPose = tvec
+        #return tvec
+
+
+
+        #pca = PCA(n_components=3)
+        #pca.fit(np.asarray(self.pcd.points))
+        
+        #R = pca.components_.T
+        #R[0, :] *= -1  # Negate the third row
+        #R[1, :] *= -1  # Negate the third row
+        #R[2, :] *= -1  # Negate the third row
+        #R = test_output["orientation"]
+        #print(R)
+
+
+        #roll, pitch, yaw = rotation_matrix_to_rpy(R)
+
+        #self.pickPose[3] = roll
+        #self.pickPose[4] = pitch
+        #self.pickPose[5] = yaw
 
         
         #pca = PCA(n_components=3)
@@ -184,7 +218,7 @@ class observation:
         self.placePose = self.pickPose.copy()
         self.placePose[2] += 0.04
 
-    def update_observation(self, rgb_img, depth_img, K, depth_scale,  observation_pose, display = False):
+    def update_observation(self, rgb_img, depth_img, K, depth_scale,  observation_pose, display = True):
         self.calc_bbox(rgb_img)
 
         self.calc_pc(rgb_img, depth_img, K, depth_scale, observation_pose)
@@ -229,7 +263,7 @@ class observation_manager:
 
     def update_observations(self, display = False):
         rgb_img, depth_img = get_pictures(self.rs_wrapper)
-        depth_img = get_refined_depth(self.rs_wrapper)
+        #depth_img = get_refined_depth(self.rs_wrapper)
         depth_scale, K = get_depth_frame_intrinsics(self.rs_wrapper)
         
         self.observation_pose = homog_coord_to_pose_vector(self.UR_interface.get_cam_pose())#self.UR_interface.recv.getActualTCPPose()
@@ -243,6 +277,7 @@ class observation_manager:
             self.display()
 
     def display(self):
+        print(f"Displaying observations")
         vis = o3d.visualization.Visualizer()
         vis.create_window()
 
@@ -259,12 +294,12 @@ class observation_manager:
             sphere.paint_uniform_color([0, 0, 0])
             vis.add_geometry(sphere)
 
-            #pickPose_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03, origin=[0, 0, 0])
-            #rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
-            #pickPose_axis.rotate(rot_mat, center=(0, 0, 0))
-            #print(observation.pickPose[:3])
-            #pickPose_axis.translate(observation.pickPose[:3])
-            #vis.add_geometry(pickPose_axis)
+            pickPose_axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.03, origin=[0, 0, 0])
+            rot_mat = rpy_to_rotation_matrix(observation.pickPose[3], observation.pickPose[4], observation.pickPose[5])
+            pickPose_axis.rotate(rot_mat, center=(0, 0, 0))
+            print(observation.pickPose[:3])
+            pickPose_axis.translate(observation.pickPose[:3])
+            vis.add_geometry(pickPose_axis)
 
             vis.add_geometry(observation.pcd_bbox)
 
@@ -274,6 +309,7 @@ class observation_manager:
         opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
         # Run the visualizer
         vis.run()
+        print(f"Done displaying observations")
         
 
 if __name__ == "__main__":
@@ -304,10 +340,10 @@ if __name__ == "__main__":
     observation_list = ["red block", "blue block", "green block", "yellow block", "white paper"]
     om = observation_manager(observation_list, myrs, label_vit, sam_predictor, myrobot)
 
-    
+    """
     goto_vec(myrobot, frontview_vec)
     om.update_observations(display=False)
-    """
+    
     goto_vec(myrobot, leftview_vec)
     om.update_observations(display=False)
 
@@ -317,12 +353,16 @@ if __name__ == "__main__":
     goto_vec(myrobot, rightview_vec)
     om.update_observations(display=False)
     """
+    #print("initial goto ")
+    #print(f"{topview_vec=}")
     goto_vec(myrobot, topview_vec)
-    om.update_observations(display=True)
+    #print("end initial goto ")
+
+    om.update_observations(display=False)
 
     for target in observation_list[:-1]:
         target_pose = om.observations[target].pickPose.copy()
-        target_pose[2] 
+        target_pose[2] += 0.2
         #target_pose[3] = topview_vec[3]
         #target_pose[4] = topview_vec[4]
         #target_pose[5] = topview_vec[5]
