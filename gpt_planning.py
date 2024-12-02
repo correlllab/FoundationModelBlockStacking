@@ -8,21 +8,19 @@ import io
 #https://platform.openai.com/docs/guides/structured-outputs/examples
 def get_state_querry_prompt():
     system_prompt = ("""
-You are a block stacking robot. Your task is to analyze the scene, determine the objects present, and infer their relationships through detailed chain of thought reasoning.
+You are a robots eyes. Your task is to analyze the scene, determine the objects present, and infer their relationships through detailed chain of thought reasoning.
 
 # Instructions
 
 You should output a JSON object containing the following fields:
 
-- **objects**: A list of all objects visible in the scene that are relevant to the block stacking task. Make sure to include the table as one of the objects.
+- **objects**: A list of all objects visible in the scene.
   
-- **object_relationships**: A list of tuples describing relationships between the objects. Each tuple should be in the format `<OBJECT1, OBJECT2>`, where `OBJECT1` is directly on top of `OBJECT2`. Include relationships where the objects are directly on the table. Do not include transitive relationships; for example, if block A is on block B and block B is on the table, do not state that block A is on the table.
-
-Ensure that every object is on at least one other object or the table. No object should be unplaced. 
+- **object_relationships**: A list of tuples describing relationships between the objects. Each tuple should be in the format `<OBJECT1, RELATIONSHIP, OBJECT2>`, where `OBJECT1` is related to `OBJECT2`. 
 
 # Chain of Thought Reasoning
 
-1. **Identify Objects**: Begin by analyzing the scene to identify all visible objects relevant to the block stacking task. This includes blocks and the table itself.
+1. **Identify Objects**: Begin by analyzing the scene to identify all visible objects.
   
 2. **Determine Object Positions**: For each object, determine its placement in relation to other objects:
    - Is the object on another block or on the table?
@@ -30,8 +28,7 @@ Ensure that every object is on at least one other object or the table. No object
 
 3. **Establish Relationships**: Once object positions are determined, establish relationships following these rules:
    - Record relationships where one object is directly on top of another.
-   - Each relationship is a pair `<OBJECT1, OBJECT2>`, where `OBJECT1` is directly above `OBJECT2`.
-   - Avoid transitive relationships to ensure clarity. 
+   - Each relationship is a triple `<OBJECT1, RELATIONSHIP, OBJECT2>`, where `OBJECT1` is related to `OBJECT2`.
 
 4. **Verify Completeness**: Ensure that all objects are covered in the relationships and that none remain without being stacked or placed on the table.
 
@@ -41,8 +38,8 @@ Your output should be formatted as a JSON object, like the example below:
 
 ```json
 {
-  "objects": ["table", "block A", "block B", "block C"],
-  "object_relationships": [["block A", "block B"], ["block B", "table"], ["block C", "table"]]
+  "objects": ["table", "A", "B", "C"],
+  "object_relationships": [["A", "is on", "B"], ["B", "is on", "table"], ["C", "is on", "table"], ["C", "is next to", "B"]]
 }
 ```
 
@@ -51,33 +48,35 @@ Make sure the output JSON adheres strictly to the specified structure and valida
 # Examples
 
 **Input Scene Description**:
-- Block A is on Block B.
-- Block B is on the table.
-- Block C is also on the table.
+- A is on B.
+- B is on the table.
+- C is also on the table.
+- C is next to B.
 
 **Chain of Thought Reasoning**:
-1. Identify Objects: The scene includes "Block A", "Block B", "Block C", and the "table".
+1. Identify Objects: The scene includes "A", "B", "C", and the "table".
 2. Determine Object Positions:
-   - Block A is on Block B.
-   - Block B is on the table.
-   - Block C is on the table.
+   - A is on B.
+   - B is on the table.
+   - C is on the table.
+   - C is next to B.
 3. Establish Relationships:
-   - `<Block A, Block B>`
-   - `<Block B, Table>`
-   - `<Block C, Table>`
+   - `<A, is on, B>`
+   - `<B, is on, Table>`
+   - `<C, is on, Table>`
+   - `<C, is next to, B>`
+                     
 
 **Output JSON**:
 ```json
 {
-  "objects": ["table", "block A", "block B", "block C"],
-  "object_relationships": [["block A", "block B"], ["block B", "table"], ["block C", "table"]]
+  "objects": ["table", "A", "B", "C"],
+  "object_relationships": [["A", "is on", "B"], ["B", "is on", "table"], ["C", "is on", "table"], ["C", "is next to", "B"]]
 }
 ```
 
 # Notes
 
-- The table itself should also be visible in the object list.
-- The white paper should also be in the object list
 - Ensure no object is left unplaced; every object must be included in the relationships field either on another object or on the table.
 - Follow the reasoning steps explicitly before outputting to ensure correctness and completeness.
 """)
@@ -167,11 +166,12 @@ def encode_image(img_array):
     return encoded_string
 
 #api calling function
-def get_gpt_next_instruction(client, rgb_image, desired_tower_order, action_history, previous_plan):
+def get_state(client, rgb_image):
     image = encode_image(rgb_image)
     img_type = "image/jpeg"
 
     state_querry_system_prompt, state_querry_user_prompt = get_state_querry_prompt()
+
     #print(f"{state_querry_system_prompt=}")
     #print()
     #print(f"{state_querry_user_prompt=}")
@@ -192,13 +192,10 @@ def get_gpt_next_instruction(client, rgb_image, desired_tower_order, action_hist
         temperature=gpt_temp
     )
     state_json = json.loads(state_response.choices[0].message.content)
-    instruction_system_prompt, instruction_user_prompt = get_instruction_prompt(desired_tower_order, state_json, action_history, previous_plan)
-    #print(f"{instruction_system_prompt=}")
-    #print()
-    #print(f"{instruction_user_prompt}")
-    #print()
-    #print(f"{instruction_assitant_prompt=}")
+    return state_response, state_json, state_querry_system_prompt, state_querry_user_prompt
 
+def get_instruction(client, desired_tower_order, state_json, action_history, previous_plan):
+    instruction_system_prompt, instruction_user_prompt = get_instruction_prompt(desired_tower_order, state_json, action_history, previous_plan)
 
     instruction_response = client.chat.completions.create(
         model=gpt_model,
@@ -210,10 +207,19 @@ def get_gpt_next_instruction(client, rgb_image, desired_tower_order, action_hist
         response_format={"type": "json_object"},
         temperature=gpt_temp
     )
+
     instruction_json = json.loads(instruction_response.choices[0].message.content)
     min_key = min(instruction_json.keys(), key=lambda x: int(x))
     next_instruction_json = instruction_json.pop(min_key)
     future_instructions_json = [(k,v) for k, v in sorted(instruction_json.items(), key=lambda item: item[0])]
+
+    return instruction_response, next_instruction_json, future_instructions_json, instruction_system_prompt, instruction_user_prompt
+
+
+def get_gpt_next_instruction(client, rgb_image, desired_tower_order, action_history, previous_plan):
+    state_response, state_json, state_querry_system_prompt, state_querry_user_prompt = get_state(client, rgb_image)
+    instruction_response, next_instruction_json, future_instructions_json, instruction_system_prompt, instruction_user_prompt = get_instruction(client, desired_tower_order, state_json, action_history, previous_plan)
+    
     return (state_response, state_json, state_querry_system_prompt, state_querry_user_prompt), (instruction_response, next_instruction_json, future_instructions_json, instruction_system_prompt, instruction_user_prompt)
     
 def print_json(j, name=""):
@@ -227,7 +233,7 @@ if __name__ == "__main__":
     from control_scripts import goto_vec, get_pictures
     from magpie_control import realsense_wrapper as real
     from magpie_control.ur5 import UR5_Interface as robot
-    from config import sideview_vec
+    from config import frontview_vec
     import matplotlib.pyplot as plt
     from openai import OpenAI
 
@@ -242,7 +248,7 @@ if __name__ == "__main__":
     client = OpenAI(
         api_key= API_KEY,
     )
-    goto_vec(myrobot, sideview_vec)
+    goto_vec(myrobot, frontview_vec)
     rgb_img, depth_img = get_pictures(myrs)
 
     
