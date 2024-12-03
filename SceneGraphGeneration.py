@@ -12,7 +12,7 @@ from sklearn.decomposition import PCA
 from magpie_control.ur5 import pose_vector_to_homog_coord, homog_coord_to_pose_vector
 #import magpie_control.ur5
 #print(f"{magpie_control.ur5.__file__=}")
-from magpie_perception.pcd import get_pca_frame
+import networkx as nx
 from gpt_planning import get_state
 import time
 
@@ -96,30 +96,86 @@ def get_refined_depth(rs_wrapper):
 
     warnings.simplefilter("default", category=RuntimeWarning)
     return filtered_depth_image
-def display_graph(graph):
-    print(dir(graph))
-    print(f"{graph.nodes=}")
-    print(f"{graph.edges=}")  
-    print(f"{graph.observation_pose=}")  
-    print(f"{graph.timestamp=}") 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
+def display_graph(G, display_2d = True, display_3d = True):
+    #print(dir(G))
+    #print(f"{G.nodes=}")
+    #print(f"{G.edges=}")  
+    #print(f"{G.graph['observation_pose']=}")  
+    #print(f"{G.graph['timestamp']=}") 
+    if display_2d:
+        pos = nx.spring_layout(G)
+        nx.draw(G, with_labels=True, node_color='lightblue', node_size=1500, font_size=15)
+        edge_labels = nx.get_edge_attributes(G, 'connection')
+        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=12)
+        plt.show(block = False)
+        plt.pause(1)
+    if display_3d:
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
 
-    T = pose_vector_to_homog_coord(graph.observation_pose)
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
-    axis.transform(T)
-    vis.add_geometry(axis)
+        T = pose_vector_to_homog_coord(G.graph["observation_pose"])
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
+        axis.transform(T)
+        vis.add_geometry(axis)
 
-    for node in graph.nodes.values():
-        vis.add_geometry(node.pcd)
-        vis.add_geometry(node.pcd_bbox)
+        for edge in G.edges(data=True):
+            #print(f"{edge=}")
+            #print(f"{dir(edge)=}")
+            source = edge[0]
+            source_node = G.nodes[source]
+            source_centroid = source_node["data"].pcd.get_center()
 
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])    
-    vis.add_geometry(axis)
-    opt = vis.get_render_option()
-    opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
-    # Run the visualizer
-    vis.run()
+            dest = edge[1]
+            dest_node = G.nodes[dest]
+            dest_centroid = dest_node["data"].pcd.get_center()
+
+            direction = dest_centroid - source_centroid
+            length = np.linalg.norm(direction)
+            direction /= length  
+
+            arrow = o3d.geometry.TriangleMesh.create_arrow(
+                cylinder_radius=0.001, cone_radius=0.004, cone_height=0.004, cylinder_height=length
+            )
+            #arrow.translate([0, 0, -length / 2])  # Translate along z-axis to place base at origin
+            arrow.paint_uniform_color([0, 1, 0])  # RGB color (red)
+            rotation_axis = np.cross([0, 0, 1], direction)
+            angle = np.arccos(np.dot([0,0,1], direction))
+            R = o3d.geometry.get_rotation_matrix_from_axis_angle(rotation_axis*angle)
+            arrow.rotate(R, center=(0,0,0))  # Align the arrow to the direction
+            arrow.translate(source_centroid)
+
+            vis.add_geometry(arrow)
+            
+            relation_str = f"{edge[0]} {edge[2]['connection']} {edge[1]}"
+            mesh_text = o3d.t.geometry.TriangleMesh.create_text(relation_str, depth=1).to_legacy()
+            scaling_factor = 0.01
+            mesh_text.scale(scaling_factor, center=mesh_text.get_center())
+
+            mesh_text.paint_uniform_color([0, 0, 0])
+
+            text_pose = (source_centroid + dest_centroid)/ 2
+            mesh_text.translate(text_pose)
+            
+            vis.add_geometry(mesh_text)
+            #vis.add_3d_label(text_pose, relation_str, font_size=0.01)
+
+
+        for obj, node in G.nodes(data=True):
+            #C = node["data"].pcd.get_center()
+            #sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.01)
+            #sphere.paint_uniform_color([0, 0, 0])  # Red color for sphere A
+            #sphere.translate(C)
+            #vis.add_geometry(sphere)
+            vis.add_geometry(node["data"].pcd)
+            vis.add_geometry(node["data"].pcd_bbox)
+
+
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])    
+        vis.add_geometry(axis)
+        opt = vis.get_render_option()
+        opt.point_size = 1.0  # Set to a smaller size (default is 5.0)
+        # Run the visualizer
+        vis.run()
 
 class Node:
     def __init__(self, str_label, label_vit, sam_predictor):
@@ -182,8 +238,8 @@ class Node:
         self.pcd = pcd
         #else:
         #    self.pcd = self.pcd + pcd
-        self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=1000, std_ratio=1.0)
-        #self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=50, std_ratio=0.1)
+        #self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=1000, std_ratio=1.0)
+        self.pcd, _ = self.pcd.remove_statistical_outlier(nb_neighbors=100, std_ratio=0.1)
         self.pcd_bbox = self.pcd.get_axis_aligned_bounding_box()
         #self.pcd_bbox = pcd.get_minimal_oriented_bounding_box()
         self.pcd_bbox.color = (1,0,0)
@@ -218,14 +274,6 @@ class Node:
             plt.show(block = False)
             plt.pause(1)  # Keeps the figure open for 3 seconds
 
-
-class Graph:
-    def __init__(self):
-        self.Nodes = {}
-        self.edges = []
-        self.timestamp = None
-        self.observation_pose = None
-
 class Graph_Manager:
     def __init__(self, UR_interface, rs_wrapper, label_vit, sam_predictor, OAI_Client):
         self.rs_wrapper = rs_wrapper
@@ -238,31 +286,33 @@ class Graph_Manager:
         self.graph_history = []
 
     def get_next_graph(self, display = False):
-        graph = Graph()
+        G = nx.DiGraph()
 
         rgb_img, depth_img = get_pictures(self.rs_wrapper)
-        graph.timestamp = time.time()
+        G.graph["timestamp"] = time.time()
 
         #depth_img = get_refined_depth(self.rs_wrapper)
         depth_scale, K = get_depth_frame_intrinsics(self.rs_wrapper)
         
         observation_pose = homog_coord_to_pose_vector(self.UR_interface.get_cam_pose())
-        graph.observation_pose = observation_pose
+        G.graph["observation_pose"] = observation_pose
         
 
         _, state_json, _, _ = get_state(self.OAI_Client, rgb_img)
-        graph.edges = state_json["object_relationships"]
 
-        nodes = {}
         for object in state_json["objects"]:
             obj_node = Node(object, self.label_vit, self.sam_predictor)
             obj_node.update_observation(rgb_img, depth_img, K, depth_scale, observation_pose, display = False)
-            nodes[object] = obj_node
+            G.add_node(object, data=obj_node)
+
+        for edge in state_json["object_relationships"]:
+            G.add_edge(edge[0], edge[2], connection=edge[1])
             
-        graph.nodes = nodes
-        self.graph_history.append(graph)
+        self.graph_history.append(G)
         if display:
             display_graph(self.graph_history[-1])
+
+        return self.graph_history[-1]
 
     
 
