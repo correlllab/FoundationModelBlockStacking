@@ -147,7 +147,14 @@ class Node:
             plt.show(block = False)
             plt.pause(1)  # Keeps the figure open for 3 seconds
         if display_3d:
-            o3d.visualization.draw_geometries([self.pcd, self.pcd_bbox])
+            app = o3d.visualization.gui.Application.instance
+            app.initialize()
+            visualizer = o3d.visualization.O3DVisualizer(title="3D Visualization", width=1024, height=768)
+            app.add_window(visualizer)
+
+            visualizer.add_geometry("point_cloud", self.pcd)
+            visualizer.add_geometry("bounding_box", self.pcd_bbox)
+            app.run()
 
 def get_graph(OAI_Client, label_vit, sam_predictor, rs_wrapper, UR_interface):
     G = nx.DiGraph()
@@ -176,14 +183,16 @@ def get_graph(OAI_Client, label_vit, sam_predictor, rs_wrapper, UR_interface):
 def get_geometries(G):
     geometries = []
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.2, origin=[0, 0, 0])
-    geometries.append(axis)
+    axis_bundle = ("world frame", axis)
+    geometries.append(axis_bundle)
     if G is None:
         return geometries
 
     T = pose_vector_to_homog_coord(G.graph["observation_pose"])
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.05, origin=[0, 0, 0])
     axis.transform(T)
-    geometries.append(axis)
+    axis_bundle = ("camera frame", axis)
+    geometries.append(axis_bundle)
 
     for obj, node in G.nodes(data=True):
         #C = node["data"].pcd.get_center()
@@ -191,10 +200,15 @@ def get_geometries(G):
         #sphere.paint_uniform_color([0, 0, 0])  # Red color for sphere A
         #sphere.translate(C)
         #vis.add_geometry(sphere)
-        geometries.append(node["data"].pcd)
-        geometries.append(node["data"].pcd_bbox)
+        pcd_bundle = (f"{node['data'].str_label} pcd", node["data"].pcd)
+        geometries.append(pcd_bundle)
+
+        bbox_bundle = (f"{node['data'].str_label} bbox", node["data"].pcd_bbox)
+        geometries.append(bbox_bundle)
 
     for edge in G.edges(data=True):
+        relation_str = f"{edge[0]} {edge[2]['connection']} {edge[1]}"
+
         source = edge[0]
         source_node = G.nodes[source]
         source_centroid = source_node["data"].pcd.get_center()
@@ -218,10 +232,10 @@ def get_geometries(G):
         arrow.rotate(R, center=(0,0,0))  # Align the arrow to the direction
         arrow.translate(source_centroid)
 
-        geometries.append(arrow)
+        arrow_bundle = (f"{relation_str} arrow", arrow)
+        geometries.append(arrow_bundle)
 
         
-        relation_str = f"{edge[0]} {edge[2]['connection']} {edge[1]}"
         mesh_text = o3d.t.geometry.TriangleMesh.create_text(relation_str, depth=12).to_legacy()
         scaling_factor = 0.00025
         mesh_text.scale(scaling_factor, center=[0,0,0])
@@ -230,8 +244,8 @@ def get_geometries(G):
 
         text_pose = (source_centroid + dest_centroid)/ 2
         mesh_text.translate(text_pose)
-
-        geometries.append(mesh_text)
+        text_bundle = (f"{relation_str} text", mesh_text)
+        geometries.append(text_bundle)
 
     return geometries
 
@@ -246,7 +260,14 @@ def display_graph(G, display_2d = True, display_3d = True):
         plt.pause(1)
     if display_3d:
         geometries = get_geometries(G)
-        o3d.visualization.draw_geometries(geometries)
+        app = o3d.visualization.gui.Application.instance
+        app.initialize()
+        visualizer = o3d.visualization.O3DVisualizer(title="3D Visualization", width=1024, height=768)
+        app.add_window(visualizer)
+
+        for label, geometery in geometries:
+            visualizer.add_geometry(label, geometery)
+        app.run()
 
 if __name__ == "__main__":
     from magpie_control import realsense_wrapper as real
@@ -285,8 +306,8 @@ if __name__ == "__main__":
     pose = homog_coord_to_pose_vector(myrobot.get_cam_pose())
     #__init__(self, str_label, rgb_img, depth_img, label_vit, sam_predictor, K, depth_scale, observation_pose)
 
-    obs = Node("dark blue block", rgb_img, depth_img, label_vit, sam_predictor, K, depth_scale, pose)
-    obs.display(display_2d = False, display_3d = False)
+    #obs = Node("dark blue block", rgb_img, depth_img, label_vit, sam_predictor, K, depth_scale, pose)
+    #obs.display(display_2d = True, display_3d = True)
 
     graph = get_graph(client, label_vit, sam_predictor, myrs, myrobot)
     display_graph(graph, display_2d = True, display_3d = True)

@@ -6,36 +6,43 @@ import time
 class Graph_Manager:
     def __init__(self):
         self.graph_history = []
+        self.last_displayed_labels = []
 
-        self.vis = o3d.visualization.Visualizer()
-        self.vis.create_window(width=1000, height=1000, visible=True)
+        self.app = o3d.visualization.gui.Application.instance
+        self.app.initialize()
 
-        print(f"{dir(self.vis)=}")
+        self.vis = o3d.visualization.O3DVisualizer(title="Scene Graph Visualizer", width=1000, height=1000)
+        self.app.add_window(self.vis)
 
-        #self.thread = Thread(target=self.update_display)
-        #self.thread.daemon = True
-        #self.thread.start()
+        self.app.run_in_thread(self.update_display)
 
     def update_display(self):
-        print(f"update display called")
-        #while True:
-        if len(self.graph_history) == 0:
-            geo = get_geometries(None)  # Get geometries for the initial graph
-        else:
-            geo = get_geometries(self.graph_history[-1])  # Get geometries for the latest graph
-        
-        print(f"{geo=}")
+        while True:
+            print(f"update display looped")
+            if len(self.graph_history) == 0:
+                geo = get_geometries(None)  # Get geometries for the initial graph
+            else:
+                geo = get_geometries(self.graph_history[-1])  # Get geometries for the latest graph
+            
+            #print(f"{geo=}")
 
-        # Clear previous geometry and add new geometries to the visualizer
-        self.vis.clear_geometries()
-        for i, geometry in enumerate(geo):
-            self.vis.add_geometry(geometry)
+            # Clear previous geometry and add new geometries to the visualizer
+            #print(f"{dir(self.vis)=}")
+            for old_geometry in self.last_displayed_labels:
+                #print(f"removing {old_geometry}")
+                self.vis.remove_geometry(old_geometry)
 
-        # Post to the main thread to update the display
-        self.vis.poll_events()
-        self.vis.update_renderer()
-        time.sleep(1)  # Sleep to control the update frequency
+            self.last_displayed_labels = []
+            for label, geometry in geo:
+                self.vis.add_geometry(label, geometry)
+                self.last_displayed_labels.append(label)
 
+            self.vis.post_redraw()
+            #self.app.post_to_main_thread(self.vis, self.vis.post_redraw)
+            #self.app.run_one_tick()
+            self.app.post_to_main_thread(self.vis, self.app.run_one_tick)
+            
+            time.sleep(0.05)
 
     def add_graph(self, graph):
         self.graph_history.append(graph)
@@ -73,19 +80,14 @@ if __name__ == "__main__":
     goto_vec(myrobot, topview_vec)
 
     gm = Graph_Manager()
-    gm.update_display()
-    
-    input("Press Enter to continue...")
-    graph = get_graph(client, label_vit, sam_predictor, myrs, myrobot)
-    gm.add_graph(graph)
-    gm.update_display()
-
-    input("Press Enter to continue...")
-    graph = get_graph(client, label_vit, sam_predictor, myrs, myrobot)
-    gm.add_graph(graph)
-    gm.update_display()
-
-
+    inp = "a"
+    while inp != "q":
+        #graph = get_graph(client, label_vit, sam_predictor, myrs, myrobot)
+        #gm.add_graph(graph)
+        #gm.update_display()
+        inp = input("press q to quit: ")
     myrobot.stop()
     myrs.disconnect()
+
+    
     
