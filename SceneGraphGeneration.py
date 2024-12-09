@@ -211,6 +211,8 @@ def display_graph(G, blocking = False):
     for edge in G.edges(data=True):
         relation_str = f"{edge[0]} {edge[2]['connection']} {edge[1]}"
 
+        relation_str = f"{edge[0]} {edge[2]['connection']} {edge[1]}"
+
         source = edge[0]
         source_node = G.nodes[source]
         source_centroid = np.mean(source_node["data"].points, axis=0)
