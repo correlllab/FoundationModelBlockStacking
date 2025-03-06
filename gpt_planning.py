@@ -146,9 +146,42 @@ The output should be a JSON object where each key is an integer indicating an or
         for i, action in previous_plan:
             user_prompt += f"   {action}\n"
 
-    
-
     return system_prompt, user_prompt
+
+def get_basic_prompt(start_state, end_state):
+    """
+    Constructs a string prompt for a language model (LLM) to determine the next best move 
+    to transition from the start state to the end state in a block world scenario.
+
+    Args:
+        start_state (dict): A dictionary representing the initial positions of blocks. 
+                            Keys are block names, and values are their placements.
+        end_state (dict): A dictionary representing the desired final positions of blocks. 
+                          Keys are block names, and values are their placements.
+
+    Returns:
+        str: A formatted string prompt describing the start state, the desired end state, 
+             and a request for the next best move to transition from the start state to the end state.
+    """
+    # Construct string prompt for an LLM
+    prompt = f"""\nGiven the start state:\n"""
+    for block, placement in start_state.items():
+        prompt += f"   {block} is on {placement}\n"
+    prompt+="\n"
+    prompt += """and desired end state:\n"""
+    for i in range(len(end_state)-1):
+        prompt += f"   {end_state[i+1]} is on {end_state[i]}\n"
+    prompt+= "\n"
+    prompt +="""what is the next best move to get us closer to the end state from the start state? Your answer needs to have two parts on two seperate lines.
+   pick: *object to be picked up*
+   place: *object to put the picked object on*
+
+if there is no block to move please have
+   pick: None
+   place: None
+    """
+    return prompt
+
 
 #helper function that formats the image for GPT api
 def encode_image(img_array):
@@ -190,7 +223,8 @@ def get_gpt_next_instruction(client, rgb_image, desired_tower_order, action_hist
         temperature=gpt_temp
     )
     state_json = json.loads(state_response.choices[0].message.content)
-    instruction_system_prompt, instruction_user_prompt = get_instruction_prompt(desired_tower_order, state_json, action_history, previous_plan)
+    #instruction_system_prompt, instruction_user_prompt = get_instruction_prompt(desired_tower_order, state_json, action_history, previous_plan)
+    instruction_system_prompt, instruction_user_prompt = get_basic_prompt(state_json, desired_tower)
     #print(f"{instruction_system_prompt=}")
     #print()
     #print(f"{instruction_user_prompt}")

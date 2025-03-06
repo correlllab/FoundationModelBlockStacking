@@ -71,7 +71,7 @@ class observation:
             queries = [self.str_label]
             abbrevq = [self.str_label]
             bbox = label_vit.predict(rgb_img, querries=queries)
-            bbox = bbox[1][0].tolist()
+            #bbox = bbox[1][0].tolist()
         self.xmin = int(bbox[0])
         self.ymin = int(bbox[1])
         self.xmax = int(bbox[2])
