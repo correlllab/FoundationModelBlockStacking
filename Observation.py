@@ -70,7 +70,7 @@ class observation:
         with torch.no_grad():
             queries = [self.str_label]
             abbrevq = [self.str_label]
-            bbox = label_vit.label(rgb_img, queries[0], abbrevq[0], plot=False, topk=True)
+            bbox = label_vit.predict(rgb_img, querries=queries)
             bbox = bbox[1][0].tolist()
         self.xmin = int(bbox[0])
         self.ymin = int(bbox[1])
