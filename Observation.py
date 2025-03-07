@@ -71,7 +71,9 @@ class observation:
             queries = [self.str_label]
             abbrevq = [self.str_label]
             bbox = label_vit.predict(rgb_img, querries=queries)
-            #bbox = bbox[1][0].tolist()
+            #print(f"{bbox=}")
+            bbox = bbox[0][1][0]
+            print(f"{bbox=}")
         self.xmin = int(bbox[0])
         self.ymin = int(bbox[1])
         self.xmax = int(bbox[2])
@@ -87,11 +89,11 @@ class observation:
         self.xCenter = int((self.xmin + self.xmax)/2)
         self.yCenter = int((self.ymin + self.ymax)/2)
 
-        sam_predictor.set_image(rgb_img)
-        sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
-        sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
-        sam_mask = np.transpose(sam_mask, (1, 2, 0))
-        self.mask = sam_mask
+        #sam_predictor.set_image(rgb_img)
+        #sam_box = np.array([self.xmin,  self.ymin,  self.xmax,  self.ymax])
+        #sam_mask, sam_scores, sam_logits = sam_predictor.predict(box=sam_box)
+        #sam_mask = np.transpose(sam_mask, (1, 2, 0))
+        #self.mask = sam_mask
         depth_querry_list = [
             (self.xCenter, self.yCenter),
             (self.xmin, self.ymin),
@@ -120,7 +122,7 @@ class observation:
             axes[0, 0].text(self.xmin, self.ymin - 10, f"{self.str_label}", color='r', fontsize=12, ha='left', va='bottom')
             axes[1, 0].text(self.xmin, self.ymin - 10, f"{self.str_label}", color='r', fontsize=12, ha='left', va='bottom')
 
-            axes[0, 1].imshow(sam_mask)
+            #axes[0, 1].imshow(sam_mask)
 
             plt.tight_layout()
             plt.show()
